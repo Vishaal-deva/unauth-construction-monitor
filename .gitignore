@@ -1,0 +1,10 @@
+node_modules/
+.env
+.venv/
+__pycache__/
+*.pyc
+detector/data/
+detector/outputs/
+*.tif
+*.zip
+.DS_Store

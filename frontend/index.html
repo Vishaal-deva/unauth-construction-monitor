@@ -1,0 +1,127 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Unauthorized Construction Monitor</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #f4f5f7; color: #1c1e21; }
+    header { padding: 12px 16px; background: #1f2937; color: #fff; }
+    h1 { margin: 0 0 10px; font-size: 1.1rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+    .controls label { display: flex; flex-direction: column; font-size: 0.75rem; gap: 3px; }
+    .controls input { padding: 6px 8px; width: 110px; font-size: 0.9rem; }
+    button { padding: 8px 16px; font-size: 0.9rem; background: #f59e0b; border: 0; border-radius: 4px; cursor: pointer; font-weight: 600; }
+    #status { padding: 8px 16px; font-size: 0.85rem; }
+    main { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 0 16px 16px; }
+    #map { height: 72vh; border-radius: 8px; }
+    .panel { background: #fff; border-radius: 8px; padding: 12px; max-height: 72vh; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 6px; border-bottom: 1px solid #e5e7eb; }
+    tr.row { cursor: pointer; }
+    tr.row:hover { background: #fff7e6; }
+    @media (max-width: 800px) { main { grid-template-columns: 1fr; } #map { height: 55vh; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Unauthorized Construction Monitor</h1>
+    <div class="controls">
+      <label>Centre lat <input id="lat" type="number" step="any" value="13.0067" /></label>
+      <label>Centre lng <input id="lng" type="number" step="any" value="80.2570" /></label>
+      <label>Radius (m) <input id="radius" type="number" value="200" min="1" max="1000" /></label>
+      <label>Min area (sqm) <input id="minArea" type="number" value="50" /></label>
+      <label>Max area (sqm) <input id="maxArea" type="number" value="500" /></label>
+      <button id="scan">Scan</button>
+    </div>
+  </header>
+  <div id="status">Click the map to set the centre, then press Scan.</div>
+
+  <main>
+    <div id="map"></div>
+    <div class="panel">
+      <table>
+        <thead><tr><th>Building</th><th>Area (sqm)</th><th>Type</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+  <script>
+    const el = (id) => document.getElementById(id);
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    const map = L.map("map").setView([13.0067, 80.257], 17);
+    const satellite = L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      { attribution: "Tiles &copy; Esri", maxZoom: 19 }
+    ).addTo(map);
+    const street = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors",
+      maxZoom: 19,
+    });
+    L.control.layers({ Satellite: satellite, Street: street }).addTo(map);
+
+    const layer = L.layerGroup().addTo(map);
+    let pin = null;
+
+    function setCentre(lat, lng) {
+      el("lat").value = (+lat).toFixed(5);
+      el("lng").value = (+lng).toFixed(5);
+      if (pin) pin.remove();
+      pin = L.marker([lat, lng]).addTo(map);
+    }
+    map.on("click", (e) => setCentre(e.latlng.lat, e.latlng.lng));
+
+    async function scan() {
+      const lat = el("lat").value, lng = el("lng").value, radius = el("radius").value;
+      const minArea = el("minArea").value || 0, maxArea = el("maxArea").value || 100000;
+      el("status").textContent = "Scanning...";
+      try {
+        const url = `/api/buildings?lat=${lat}&lng=${lng}&radius=${radius}&minArea=${minArea}&maxArea=${maxArea}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Request failed");
+        render(data, +lat, +lng, +radius);
+      } catch (err) {
+        el("status").textContent = "Error: " + err.message;
+      }
+    }
+
+    function render(data, lat, lng, radius) {
+      layer.clearLayers();
+      const tbody = el("rows");
+      tbody.innerHTML = "";
+
+      const circle = L.circle([lat, lng], { radius, color: "#ffffff", weight: 1, dashArray: "6", fill: false }).addTo(layer);
+
+      for (const b of data.buildings) {
+        const poly = L.polygon(b.polygon, { color: "#f59e0b", weight: 2, fillOpacity: 0.35 }).addTo(layer);
+        poly.bindPopup(`<b>${esc(b.id)}</b><br>${b.areaSqm} sqm<br>Type: ${esc(b.type)}`);
+
+        const tr = document.createElement("tr");
+        tr.className = "row";
+        for (const text of [b.id, b.areaSqm, b.type]) {
+          const td = document.createElement("td");
+          td.textContent = text;
+          tr.appendChild(td);
+        }
+        tr.addEventListener("click", () => {
+          map.fitBounds(poly.getBounds(), { maxZoom: 19 });
+          poly.openPopup();
+        });
+        tbody.appendChild(tr);
+      }
+
+      map.fitBounds(circle.getBounds());
+      el("status").textContent = `${data.count} buildings between ${el("minArea").value} and ${el("maxArea").value} sqm within ${radius} m`;
+    }
+
+    el("scan").addEventListener("click", scan);
+    setCentre(13.0067, 80.257);
+  </script>
+</body>
+</html>
